@@ -1,0 +1,935 @@
+################################################################
+##                                                            ##
+##                       Polymake script                      ##
+##                      by Timo Yu 340985                     ##
+##  https://github.com/timo-y/MA-Sub-regular_Triangulations   ##
+##                                                            ##
+################################################################
+#
+# Functions written for my master's thesis.
+# Every triangulation should be given as a collection of maximal facets.
+#
+
+use strict;
+use application "polytope";
+# load library for min/max functions
+use List::Util qw( min max );
+
+
+########
+# Runs #
+########
+#
+# Functions running some examinations and printing out information
+# 
+
+# Test if lambda is contained in C_Tri for some M
+# Usage lambda_testing(P, T, M); example usage: lambda_testing(cube(3)->VERTICES, cube(3)->TRIANGULATION->FACETS,10)
+# @param Points P
+# @param Triangulation T
+# @param Integer M
+# @returns The cone C_Tri
+sub lambda_testing
+{
+	my ($points,$tri,$M) = @_;
+	my $dim = scalar(@{$points});
+	my $gkz_T = gkz_vector($points,$tri);
+	my $P_Tri = get_P_Tri($tri, $points);
+	my $C_Tri = get_C_Tri($P_Tri);
+	my $lambda = get_lambda($M, $dim);
+	my $normal_vector = -1*$P_Tri->VERTEX_NORMALS->[0]->slice(~[0]);
+	my $order = get_ordering_perm($normal_vector);
+	my $lambda_perm = permute_vec($lambda, $order);
+	# TRIANGULATION
+	print "==============================\n# TRIANGULATION (regular? ".is_regular($points, $tri)->[0].") #\n==============================\n";
+	print $tri."\n";
+	print "GKZ-vector:\n$gkz_T\n";
+	print "==================================\n# P_Tri (with 0 added as vertex) #\n==================================\n";
+	print "# DIMENSION:\n".$P_Tri->DIM."\n\n";
+	print "# VERTICES (".$P_Tri->N_VERTICES."):\n".$P_Tri->VERTICES."\n";
+	print "# POINTS (".$P_Tri->N_POINTS."):\n".$P_Tri->POINTS."\n";
+	print "=========\n# C_Tri #\n=========\n";
+	print "# DIMENSION:\n".$C_Tri->DIM."\n\n";
+	print "# RAYS (".$C_Tri->N_RAYS."):\n".$C_Tri->RAYS."\n";
+	print "# LINEALITY (".$C_Tri->LINEALITY_DIM."):\n".$C_Tri->LINEALITY_SPACE."\n";
+
+	print "=================================================\n# Working towards getting the permutation sigma #\n=================================================\n";
+	print "# NORMAL VECTOR:\n$normal_vector\n\n";
+
+	print "# Sigma^{-1}:\n".(ones_vector($dim)+$order)."\n\n";
+	print "# Sigma (i.e. we are looking at the order [a_sigma(1), a_sigma(2), ..., a_sigma($dim)]):\n".(ones_vector($dim)+invert_permutation($order))."\n\n";
+	print "# Permuted Lambda:\n$lambda_perm\n\n";
+	print "Contains permuted lambda?\n";
+	print $C_Tri->contains($lambda_perm);
+
+	return $C_Tri;
+}
+
+# Examine the neighborhood of a triangulation in the secondary polytope
+# Usage exam_nbh(P,T); example usage: exam_nbh(cube(3)->VERTICES, cube(3)->TRIANGULATION->FACETS)
+# @param Points P
+# @param Triangulation T
+sub exam_nbh
+{
+	my ($points, $tri) = @_;
+	
+	my $gkz_T = gkz_vector($points,$tri);
+
+	# TRIANGULATION
+	print "==============================\n# TRIANGULATION (regular? ".is_regular($points, $tri)->[0].") #\n==============================\n";
+	print $tri;
+
+	print "\nGKZ-VECTOR:\n".$gkz_T."\n";
+	
+	# NEIGHBORHOOD GKZ VECTORS (REGULAR VS NON-REGULAR)
+	print "\n================\n# Neighborhood #\n================\n";
+	my $nbh = neighborhood($tri, $points);
+	print "\n# Neighbors: ".(scalar(@{$nbh->[0]})+scalar(@{$nbh->[1]}))."\n";
+	print "# Regular Neighbors: ".scalar(@{$nbh->[0]})."\n";
+	print "# Non-regular Neighbors: ".scalar(@{$nbh->[1]})."\n";
+
+	# ACTIVE CIRCUITS
+	my $flippable_circuits = flippable_circuits($tri, $points);
+	print "\n# ACTIVE CIRCUITS (".scalar(@$flippable_circuits).")\n";
+	print join("\n", reverse @{$flippable_circuits})."\n\n";
+
+	my @v_i_array;
+	print "\n## NEIGHBORS (GKZ-vector ; v_i ; Z_i )\n";
+	print "\n# REGULAR\n";
+	my $set1 = new Set<Vector<Int>>;
+	foreach my $reg_tri (@{$nbh->[0]})
+	{
+		my $v_i = $reg_tri->[1]-$gkz_T;
+		print $reg_tri->[1]."\t; ";
+		foreach my $circuit (@$flippable_circuits)
+		{
+			if (gkz_circuit($points, $circuit, $tri) eq $v_i || gkz_circuit($points, $circuit, $tri) eq -$v_i)
+			{
+				print $v_i."\t; ".$circuit."\n";
+				push (@v_i_array, add_projective($v_i));
+			}
+		}
+		$set1->collect($reg_tri->[1]);
+	}
+	#print join("\n", reverse @$set1)."\n";
+	print "\n# NON-REGULAR\n";
+	my $set2 = new Set<Vector<Int>>;
+	foreach my $nreg_tri (@{$nbh->[1]})
+	{
+		my $v_i = $nreg_tri->[1]-$gkz_T;
+		print $nreg_tri->[1]."\t; ";
+		foreach my $circuit (@$flippable_circuits)
+		{
+			if (gkz_circuit($points, $circuit, $tri) eq $v_i || gkz_circuit($points, $circuit, $tri) eq -$v_i)
+			{
+				print $v_i."\t; ".$circuit."\n";
+				push (@v_i_array, add_projective($v_i));
+			}
+		}
+		$set2->collect($nreg_tri->[1]);
+	}
+	#print join("\n", reverse @$set2)."\n";
+
+	# NEIGHBORHOOD EMBEDDED INTO THE SEC-P (GEOMETRIC PROPERTIES)
+	my $local_secP = local_secP($tri, $points);
+	print "\n\n============================\n# Local secondary polytope #\n============================\n";
+	print "DIMENSION:\n".$local_secP->DIM."\n";
+	print "VERTICES (".$local_secP->N_VERTICES."):\n".$local_secP->VERTICES."\n";
+	print "POINTS (".$local_secP->N_POINTS."):\n".$local_secP->POINTS."\n";
+
+	# P_Tri
+	my $P_Tri = get_P_Tri($tri, $points);
+	print "==================================\n# P_Tri (with 0 added as vertex) #\n==================================\n";
+	print "DIMENSION:\n".$P_Tri->DIM."\n";
+	print "VERTICES (".$P_Tri->N_VERTICES."):\n".$P_Tri->VERTICES."\n";
+	print "POINTS (".$P_Tri->N_POINTS."):\n".$P_Tri->POINTS."\n";
+}
+
+
+
+
+#####################
+# Chapter 3 related # 
+#####################
+#
+# Functions constructing elements used in the 3rd Chapter ($P_Tri, $C_Tri, ...) 
+#
+
+# Get the vector lambda=[M^d,M^{d-1}, ..., M]
+# @param Integer M
+# @param Dimension d
+# @returns vector lambda
+sub get_lambda
+{
+	my ($M, $d) = @_;
+	my @Ms = ();
+	for (my $i=0; $i<$d; $i++)
+	{
+		$Ms[$i] = $M**($d-$i);
+	}
+	return new Vector(@Ms);
+}
+
+# Get the permutation induced by the normal vector of the separating hyperplane of 0 in P_Tri
+# Usage: get_ordering_perm(n)
+# @param normal vector n of separating hyperplane of the vertex 0 in P_Tri
+# @returns permutation sigma
+sub get_ordering_perm
+{
+	my ($vec) = @_;
+	my @vector_array = ();
+	my @vector_array2 = (@$vec);
+	my @output;
+	for (my $i=0; $i<scalar@$vec; $i++)
+	{
+		$vector_array[$i] = $vec->[$i];
+	}
+	for (my $i=0; $i<scalar@$vec; $i++)
+	{
+		my $maxValue = max @vector_array;
+		my $index = 0;
+		$index++ until $vector_array[$index] == $maxValue;
+		$vector_array[$index] = -inf;
+		push @output, $index;
+	}
+	my $output_vec = new Vector<Int>(@output);
+	return invert_permutation($output_vec);
+	#return $output_vec;
+}
+
+# Invert a permutation
+# Usage: invert_permutation(sigma)
+# @param permutation sigma
+# @returns the inverse permutation sigma^{-1}, s.t. sigma(sigma^{-1})=Id, where Id is the identity
+sub invert_permutation
+{
+	my ($vec) = @_;
+	my @vector_array = ();
+	for (my $i=0; $i<scalar@$vec; $i++)
+	{
+		my $index = $vec->[$i];
+		$vector_array[$index] = $i;
+	}
+	return new Vector<Int>(@vector_array);
+}
+
+# Get the GKZ-vector of a circuit
+# Usage gkz_circuit(P, Z, T)
+# @param Points P
+# @param Circuit Z
+# @param Triangulation T
+# @returns Vector gkz_{Z,T}
+sub gkz_circuit
+{
+	my ($points, $circuit, $tri) = @_;
+
+	my $t_s = get_elem_tri($circuit->[1]);
+	my $t_plus = $t_s->first;
+	my $t_minus = $t_s->second;
+	my $link = $circuit->[0] eq "+" ? flippable($t_plus, $tri) : flippable($t_minus, $tri);
+	my $s_s = link_ts($t_plus,$t_minus,$link->[1],$tri);
+	my $s_plus = $s_s->first;
+	my $s_minus = $s_s->second;
+
+	my $gkz_plus = new Vector<Int>(new Polytope<Rational>(POINTS=>$points,TRIANGULATION=>new topaz::GeometricSimplicialComplex<Rational>(FACETS=>$s_plus))->TRIANGULATION->GKZ_VECTOR);
+	my $gkz_minus = new Vector<Int>(new Polytope<Rational>(POINTS=>$points,TRIANGULATION=>new topaz::GeometricSimplicialComplex<Rational>(FACETS=>$s_minus))->TRIANGULATION->GKZ_VECTOR);
+
+	return new Vector<Int>($gkz_plus-$gkz_minus);
+}
+
+# Get the polytope P_Tri = conv(0, v_1, ..., v_k)
+# Usage: get_P_Tri(T,P)
+# @param Triangulation T
+# @param Points P
+# @returns the polytope P_Tri
+sub get_P_Tri
+{
+	my ($tri, $points) = @_;
+	my $local_secP = local_secP($tri, $points);
+	my $gkz_vector = new Vector(gkz_vector($points, $tri));
+	return translate($local_secP,-$gkz_vector);
+}
+
+# Get the cone C_Tri
+# Usage: get_C_Tri(P_Tri)
+# @param Polytope P_Tri = conv(0, v_1, ..., v_k), where v_i = gkz_{Z_i,Tri} and 0=zero_vector(n)
+# @returns the cone C_Tri
+sub get_C_Tri
+{
+	my ($P_Tri) = @_;
+	return get_inv_cone(normal_cone($P_Tri, 0));
+}
+
+#################################
+# flip-graph/secondary-polytope #
+#################################
+#
+# Flip-graph related functions mostly for calculating the local neighborhood of a triangulation 
+#
+
+# Create local secondary polytope of a triangulation
+# Usage local_secP(T,P)
+# @param Triangulation T
+# @param Points P
+# @returns the sub-polytope consisting of gkz_Tri and its neighbors in the flip-graph 
+sub local_secP
+{
+	my ($tri, $points, $depth) = @_;
+	my $nbh = neighborhood($tri, $points);
+	my $gkz_vector;
+	my @nbh_pts;
+	my $set1 = new Set<Vector<Int>>;
+	my $set2 = new Set<Vector<Int>>;
+	foreach my $neighbor (@{$nbh->[0]})
+	{
+		$gkz_vector = add_projective($neighbor->[1]);
+		$set1->collect($gkz_vector);
+	}
+	foreach my $neighbor (@{$nbh->[1]})
+	{
+		$gkz_vector = add_projective($neighbor->[1]);
+		$set2->collect($gkz_vector);
+	}
+	push (@nbh_pts, add_projective(gkz_vector($points, $tri))); #Add initial GKZ
+	push (@nbh_pts, reverse @$set2, @$set1);
+	my $pts = new Matrix<Rational>(@nbh_pts);
+	my $local_secP = new Polytope<Rational>(POINTS=>$pts);
+	return $local_secP;
+}
+
+# Calculating neighborhood of a triangulation in the flipgraph and spliting it into regular and non-regular ones
+# Usage neighborhood(T, P)
+# @param Triangulation T
+# @param Points P
+# @returns pair of arrays [A_1,A_2], A_1 contains regular neighbors, A_2 contains non-regular neighbors
+sub neighborhood 
+{
+	my ($tri, $points) = @_;
+	my $adjacent = adjacent_in_flipg($tri, $points);
+
+	my @regular_only; # = regular_only($adjacent, $poly->VERTICES);
+	my @non_regular_only; # = non_regular_only($adjacent, $poly->VERTICES);
+
+	foreach my $neighbor (@$adjacent)
+	{
+		my $nb_tri = new Array<Set<Int>>($neighbor->[0]);
+		if (is_regular($points,$nb_tri)->[0])
+		{
+			push(@regular_only, $neighbor);
+		}
+		else
+		{
+			push(@non_regular_only, $neighbor);
+		}
+	}
+
+	my @output;
+	push(@output, \@regular_only);
+	push(@output, \@non_regular_only);
+	
+	return wantarray ? @output : \@output;
+}
+
+
+# Return the adjacent triangulation in the flip-graph
+# Usage adjacent_in_flipg(T, PC)
+# @param T Triangulation as Array<Set<Int>>
+# @param P Points
+# @returns The adjacent triangulations in an Array<Array<Set<Int>>>
+sub adjacent_in_flipg
+{
+	my ($triangulation, $points) = @_;
+	# 1. For each circuit Z = (Z^+, Z^-) test, if T^+(Z) or T^-(Z) is contained in T
+	my $pc = new PointConfiguration<Rational>(POINTS=>$points);
+	my $circuits = $pc->CIRCUITS;
+	my $N_circuits = $circuits->size;
+	my $tri = new Set<Set<Int>>($triangulation);
+
+	my @adjacent_triangulations;
+	foreach my $circuit (@$circuits)
+	{
+		# Create T^+ and T^-
+		my $t_s = get_elem_tri($circuit);
+		my $t_plus = $t_s->first;
+		my $t_minus = $t_s->second;
+
+		# Check if either one is contained in T		
+		if (is_contained($tri, $t_plus)) # If T^+ is contained in T
+		{
+			my $link = flippable($t_plus, $tri);
+			if ($link->[0] == 1) {
+				my $s_s = link_ts($t_plus,$t_minus,$link->[1],$tri);
+				my $s_plus = $s_s->first;
+				my $s_minus = $s_s->second;
+
+				my $new_tri = flip($tri, $s_plus, $s_minus);
+
+				my $push = new Pair<Set<Set<Int>>, Vector<Int>>($new_tri, gkz_vector($points, $new_tri));
+				push (@adjacent_triangulations, $push);
+			}
+		} 
+		elsif (is_contained($tri, $t_minus)) # If T^- is contained in T
+		{
+			my $link = flippable($t_minus, $tri);
+			if ($link->[0] == 1) {
+				my $s_s = link_ts($t_plus,$t_minus,$link->[1],$tri);
+				my $s_plus = $s_s->first;
+				my $s_minus = $s_s->second;
+
+				my $new_tri = flip($tri, $s_minus, $s_plus);
+				
+				my $push = new Pair<Set<Set<Int>>, Vector<Int>>($new_tri, gkz_vector($points, $new_tri));
+				push (@adjacent_triangulations, $push);
+			}
+		}
+	}
+	return wantarray ? @adjacent_triangulations : \@adjacent_triangulations;
+}
+
+# Give all "active" circuits of a triangulation and if its "+" or "-" triangulation is contained 
+sub flippable_circuits
+{
+	my ($triangulation, $points) = @_;
+
+	# 1. For each circuit Z = (Z^+, Z^-) test, if T^+(Z) or T^-(Z) is contained in T
+	my $pc = new PointConfiguration<Rational>(POINTS=>$points);
+	my $circuits = $pc->CIRCUITS;
+	my $N_circuits = $circuits->size;
+	my $tri = new Set<Set<Int>>($triangulation);
+
+	my @flippable_circuits;
+	foreach my $circuit (@$circuits)
+	{
+		# Create T^+ and T^-
+		my $t_s = get_elem_tri($circuit);
+		my $t_plus = $t_s->first;
+		my $t_minus = $t_s->second;
+
+		# Check if either one is contained in T		
+		if (is_contained($tri, $t_plus)) # IF T^+ is contained in T
+		{
+			my $link = flippable($t_plus, $tri);
+			if ($link->[0] == 1) {
+				my $push = new Pair<String, Pair<Set<Int>,Set<Int>>>("+", $circuit);
+				push (@flippable_circuits, $push);
+			}
+		} 
+		elsif (is_contained($tri, $t_minus)) # IF T^- is contained in T
+		{
+			my $link = flippable($t_minus, $tri);
+			if ($link->[0] == 1) {
+				my $push = new Pair<String, Pair<Set<Int>,Set<Int>>>("-", $circuit);
+				push (@flippable_circuits, $push);
+			}
+		}
+	}
+	return wantarray ? @flippable_circuits : \@flippable_circuits;
+}
+
+# Check if subtriangulation is contained in a triangulation
+sub is_contained
+{
+	my ($big_tri, $small_tri) = @_;
+	my $final_bool = 1;
+	foreach my $small_cell (@$small_tri)
+	{
+		my $cell_bool = 0;
+		foreach my $big_cell (@$big_tri)
+		{
+			if ($big_cell * $small_cell eq  $small_cell)
+			{
+				$cell_bool = 1; # the small cell is contained!
+				last;
+			}
+		}
+		if ($cell_bool != 1)
+		{
+			$final_bool = 0;
+			last;
+		}
+	}
+	return $final_bool;
+}
+
+# Flip 
+sub flip
+{
+	my ($tri, $t_out, $t_in) = @_;
+	my $new_tri = new Set<Set<Int>>($t_in);
+
+	foreach my $cell (@$tri)
+	{
+		my $cell_is_good = 1;
+		foreach my $badcell (@$t_out)
+		{
+			if ($cell eq $badcell)
+			{
+				$cell_is_good = 0; # cell is no good!
+				last;
+			}
+		}
+		if ($cell_is_good)
+		{
+			$new_tri->collect($cell);
+		}
+	}
+	return $new_tri;
+}
+
+# Create the proper triangulations of a circuit (cells united with the link)
+sub link_ts
+{
+	my ($t_plus, $t_minus, $link, $tri) = @_;
+
+	my $s_plus = new Set<Set<Int>>;
+	my $s_minus = new Set<Set<Int>>;
+
+	if ($link->size>0) 
+	{
+		foreach my $link_part (@$link)
+		{
+			foreach my $cell (@$t_minus)
+			{
+				$s_minus->collect($cell + $link_part);
+			} 
+			foreach my $cell (@$t_plus)
+			{
+				$s_plus->collect($cell + $link_part);
+			}
+		}
+	} 
+	else 
+	{
+		$s_plus = $t_plus;
+		$s_minus = $t_minus;
+	}
+	my $output = new Pair<Set<Set<Int>>, Set<Set<Int>>>($s_plus, $s_minus);
+	return $output;
+}
+
+# Return if a triangulation is flippable via a circuit
+sub flippable
+{
+	my ($t_plusminus,$tri) = @_;
+
+	my $link_plusminus = new Set<Set<Int>>;
+	my $counter = 0;
+	foreach (@$t_plusminus)
+	{
+		my $get_link = get_link($_, $tri);
+		if ($get_link->size>0)
+		{
+			foreach my $link_part (@$get_link)
+			{
+				if (!($link_plusminus->collect($link_part)) && $counter>0)
+				{
+					return new Pair<Bool, Set<Set<Int>>>(0, new Set<Set<Int>>);
+				}
+			}
+			
+		}
+		$counter++;
+	}
+	return new Pair<Bool, Set<Set<Int>>>(1, $link_plusminus);
+}
+
+# Get link of a face as Set<Int> in a tri as Set<Set<Int>>
+sub get_link
+{
+	my ($face,$tri) = @_;
+	my $link = new Set<Set<Int>>;
+	$tri = new Set<Set<Int>>($tri);
+	foreach (@$tri)
+	{
+		my $is_linked = is_linked($_, $face);
+		if ($is_linked->[0] ==  1)
+		{
+			$link->collect($is_linked->[1]);
+		}
+	}
+	return $link;
+}
+sub is_linked
+{
+	my ($tri_face, $face) = @_;
+	$face = new Set<Int>($face);
+	$tri_face = new Set<Int>($tri_face);
+	if ($tri_face * $face eq $face)
+	{
+		return new Pair<Bool, Set<Int>>(1,$tri_face - $face);
+	}
+	return new Pair<Bool, Set<Int>>(0,new Set<Int>);
+}
+
+# Gets a circuit Z and returns the (elementary) triangulations (T^+(Z), T^-(Z))
+sub get_elem_tri
+{
+	my ($circuit) = @_;
+	my $z_plus = new Set<Int>($circuit->first);
+	my $z_minus = new Set<Int>($circuit->second);
+	# Creat Z
+	my $z_union = $z_plus + $z_minus;
+
+	my $N_z_plus = $z_plus->size;
+	my $N_z_minus = $z_minus->size;
+	# Create T^+ and T^-
+	my $t_plus = new Set<Set<Int>>;
+	my $t_minus = new Set<Set<Int>>;
+	# T^+
+	for (my $j=0; $j<$N_z_minus; $j++)
+	{
+		$t_plus->collect($z_union-$z_minus->[$j]);
+	}
+	# T^-
+	for (my $j=0; $j<$N_z_plus; $j++)
+	{
+		$t_minus->collect($z_union-$z_plus->[$j]);
+	}
+
+	return new Pair<Set<Set<Int>>, Set<Set<Int>>>($t_plus, $t_minus);
+}
+
+
+# Calculate the shortest path from a triangulation to a regular triangulation
+# Usage shortest_flip_path(T, P)
+# @param Triangulation T
+# @param Points P
+# @returns the path as an array of predecessors
+sub shortest_flip_path
+{
+	my ($tri, $points) = @_;
+	my @to_check_queue;
+	my @checked_triangulations;
+	my @all_done_triangulations;
+	my $position_in_checked_queue = 0;
+	my $found_regular = 0;
+	my %pred;
+	my @path;
+
+	#$pred{$tri} = "0";
+
+	push (@to_check_queue, $tri);
+
+	while ($found_regular == 0)
+	{
+		if (scalar(@to_check_queue)==0)
+		{
+			my $N_checked_triangulations = scalar(@checked_triangulations);
+			for (my $i=0;$i<$N_checked_triangulations;$i++)
+			{
+				my $neighbor_tri = shift(@checked_triangulations);
+				push (@all_done_triangulations, $neighbor_tri);
+				my @push_array = adjacent_in_flipg($neighbor_tri->[0],$points);
+				foreach (@push_array)
+				{
+					if (!defined $pred{$_}) {
+						$pred{$_} = $tri;
+					}
+				}
+				push (@to_check_queue, @push_array);
+			}
+		}
+		my $active_triangulation = shift @to_check_queue;
+		$found_regular = is_regular($points, $active_triangulation->[0])->[0];
+		push (@checked_triangulations, $active_triangulation);
+	}
+	my $predecessor = pop @checked_triangulations;
+	while (defined $predecessor)
+	{
+		push (@path, new Pair<Array<Set<Int>>, Vector<Int>>($predecessor));
+		$predecessor = $pred{$predecessor};
+	}
+	return wantarray ? @path: \@path;
+}
+
+
+######################
+# regular/nonregular #
+######################
+#
+# Help functions for filtering triangulations
+#
+
+# Filter for regular triangulations
+# Usage: regular_only(Tri, P)
+# @param Triangulations Tri of P as mptopcom output
+# @param Points P
+# @returns an array with the regular triangulations
+sub regular_only
+{
+	my ($mptopcom_output, $points) = @_;
+	my $N_triangs = scalar @$mptopcom_output;
+	my @regular_triangs;
+	for (my $i = 0; $i<$N_triangs; $i++) 
+	{
+		if (is_regular($points,@$mptopcom_output[$i]->[0])->[0])
+		{
+			push(@regular_triangs, @$mptopcom_output[$i]);
+		}
+	}
+	return wantarray ? @regular_triangs : \@regular_triangs;
+}
+
+# Filter for non-regular triangulations
+# Usage: non_regular_only(Tri, P)
+# @param Triangulations Tri of P as mptopcom output
+# @param Points P
+# @returns an array with the non-regular triangulations
+sub non_regular_only
+{
+	my ($mptopcom_output, $points) = @_;
+	my $N_triangs = scalar @$mptopcom_output;
+	my @non_regular_triangs;
+	for (my $i = 0; $i<$N_triangs; $i++) 
+	{
+		if (!is_regular($points,@$mptopcom_output[$i]->[0])->[0])
+		{
+			push(@non_regular_triangs, @$mptopcom_output[$i]);
+		}
+	}
+	return wantarray ? @non_regular_triangs : \@non_regular_triangs;
+}
+
+#############
+# mptopcom 	#
+#############
+#
+# Working with data from mptopcom needed some helper functions
+#
+
+# Load the i-th triangulation from a saved file (saved from running mptopcom via "mpirun mptopcom [...] 1>file.txt" in the terminal)
+# Usage: tri_from_txt(path_to_file, i)
+# @param Path to the file containing the triangulations (e.g. "/path/to/file/file.txt")
+# @param Index i of the wanted triangulation
+# @returns the i-th triangulation as a Array
+sub tri_from_txt
+{
+	my ($path_to_file, $i) = @_;
+	open(my $fh, '<:encoding(UTF-8)', $path_to_file)
+	or die "Could not open file '$path_to_file' $!";
+	
+	my $row;
+	my $j=1;
+	while ($row = <$fh>) {
+	  if ($j>=$i) 
+	  	{
+	  		last;
+	  	}
+	  $j++;
+	}
+	close $fh;
+	return decompose_line_no_symmetry($row);
+}
+
+# Transforms the points from the example folder from mptopcom into the points for polymake (puts the projective coordinate to the front)
+# Usage: ex_to_pc (A)
+# @param Array<Array<Int>> A of points with projective coordinate as last one
+# @returns a Matrix<Rational> of the transformed points as rows
+sub example_to_pc
+{
+	my ($input) = @_;
+	my $d = scalar @$input;
+	for (my $i=0; $i < $d; $i++)
+	{
+		my $projective_coordinate = pop(@{@$input[$i]});
+		@{@$input[$i]} = ($projective_coordinate, @{@$input[$i]});
+	}
+	my $M = new Matrix<Rational>(@$input); 
+	return $M;
+}
+
+##############################
+# copied from mptopcom.rules #
+##############################
+# decompose a line of mptopcom output and trnasform it into polymake data
+sub decompose_line_no_symmetry
+{
+   my($line) = @_;
+   my($triang, $gkz) = $line =~ m/(\{\{.*\}\})\]\s*gkz: (\[[^\]]*\])/;
+   $triang =~ s/\{/\[/g;
+   $triang =~ s/\}/\]/g;
+   return new Pair<Array<Set<Int>>, Vector<Int>>(new Array<Set<Int>>(eval $triang), new Vector<Int>(eval $gkz));
+}
+
+#############
+# symmetry 	#
+#############
+
+
+# Add the group of automorphisms to a polytope P
+# Usage: add_group(P)
+# @param Polytope P
+sub add_group
+{
+	my ($poly) = @_;
+	my $aut = automorphisms($poly->VERTICES_IN_FACETS);
+	my @g = map { $_->first } @{$aut};
+	my $fperm = new group::PermutationAction(GENERATORS=>\@g);
+	my  $g = new group::Group(FACETS_ACTION=>$fperm);           # note how we use the FACETS_ACTION property this time
+	$g->name = "fullCombinatorialGroupOnFacets";            # is is advisable to give multiple objects a meaningful name
+	$poly->add("GROUP",$g);
+	return $g;
+}
+
+
+###################
+# geometry basics #
+###################
+#
+# Adding some functionality
+#
+
+# Add the projective coordinate to a vector v
+# Usage: add_projective(v)
+# @param vector v
+# @returns the vector [1, v]
+sub add_projective
+{
+	my ($vector) = @_;
+	return ref $vector eq ref new Vector<Int> ? new Vector<Int>([1,@$vector]) : new Vector<Rational>([1,@$vector]);
+}
+
+# Permuts the entries of a vector v
+# Usage: permute_vec(v, sigma)
+# @param vector v
+# @param permutation sigma
+# @returns the vector [v_sigma(1), ..., v_sigma(n)]
+sub permute_vec
+{
+	my ($vector, $permutation) = @_;
+	my @vec_entries = ();
+	push @vec_entries, @$vector;
+	for (my $i=0;$i<scalar@$permutation;$i++)
+	{
+		 $vec_entries[$i] = $vector->[$permutation->[$i]];
+	}
+	return new Vector(@vec_entries);
+}
+
+# Mirror a cone at the origin
+# Usage: get_inv_cone(C)
+# @param Cone C
+# @returns -C
+sub get_inv_cone
+{
+	my ($input_cone) = @_;
+
+	my $rays = -$input_cone->RAYS;
+	my $lin_space = -$input_cone->LINEALITY_SPACE;
+	return new Cone(INPUT_RAYS=>$rays, INPUT_LINEALITY=>$lin_space);
+}
+
+# Get a polytope attached with a triangulation
+# Usage get_poly_tri(P,T)
+# @param Points P
+# @param Triangulation T
+# @returns Polytope conv(P) with triangulation T
+sub get_poly_tri
+{
+	my ($points, $tri) = @_;
+	return new Polytope<Rational>(POINTS=>$points,TRIANGULATION=>new topaz::GeometricSimplicialComplex<Rational>(FACETS=>$tri));
+}
+
+# Get the GKZ-vector
+sub gkz_vector
+{
+	my ($points, $tri) = @_;
+	return new Vector<Int>(new Polytope<Rational>(POINTS=>$points,TRIANGULATION=>new topaz::GeometricSimplicialComplex<Rational>(FACETS=>$tri))->TRIANGULATION->GKZ_VECTOR);
+}
+
+########
+# MISC #
+########
+
+# clean a string from "\n"s
+sub clean {
+    my $text = shift;
+    $text =~ s/\n//g;
+    $text =~ s/\r//g;
+    return $text;
+}
+
+
+#############
+# Polytopes #
+#############
+
+# The 4-4-Lattice
+sub l44
+{
+	my $pts = example_to_pc([
+	[0,0,1],
+	[1,0,1],
+	[2,0,1],
+	[3,0,1],
+	[0,1,1],
+	[1,1,1],
+	[2,1,1],
+	[3,1,1],
+	[0,2,1],
+	[1,2,1],
+	[2,2,1],
+	[3,2,1],
+	[0,3,1],
+	[1,3,1],
+	[2,3,1],
+	[3,3,1]
+	]);
+	my $lattice_4_4 =  new Polytope<Rational>(POINTS=>$pts);
+	add_group($lattice_4_4);
+	return $lattice_4_4;
+}
+
+# The 4-Cube (I^4)
+sub i4
+{
+	my $pts = example_to_pc([[0,0,0,0,1],
+	[1,0,0,0,1],
+	[0,1,0,0,1],
+	[1,1,0,0,1],
+	[0,0,1,0,1],
+	[1,0,1,0,1],
+	[0,1,1,0,1],
+	[1,1,1,0,1],
+	[0,0,0,1,1],
+	[1,0,0,1,1],
+	[0,1,0,1,1],
+	[1,1,0,1,1],
+	[0,0,1,1,1],
+	[1,0,1,1,1],
+	[0,1,1,1,1],
+	[1,1,1,1,1]]);
+	my $i4 =  new Polytope<Rational>(POINTS=>$pts);
+	add_group($i4);
+	return $i4;
+}
+
+# The 4-Cube (I^4) with a vertain order (via a permutation)
+sub i4order 
+{
+	my ($order) = @_;
+	my $pts = example_to_pc([[0,0,0,0,1],
+	[1,0,0,0,1],
+	[0,1,0,0,1],
+	[1,1,0,0,1],
+	[0,0,1,0,1],
+	[1,0,1,0,1],
+	[0,1,1,0,1],
+	[1,1,1,0,1],
+	[0,0,0,1,1],
+	[1,0,0,1,1],
+	[0,1,0,1,1],
+	[1,1,0,1,1],
+	[0,0,1,1,1],
+	[1,0,1,1,1],
+	[0,1,1,1,1],
+	[1,1,1,1,1]]);
+	my @array = ();
+	for (my$i=0;$i<16;$i++)
+	{
+		push (@array, $pts->[$order->[$i]]);
+	}
+	$pts = new Matrix(\@array);
+	my $i4 =  new Polytope<Rational>(POINTS=>$pts);
+	return $i4;
+}
